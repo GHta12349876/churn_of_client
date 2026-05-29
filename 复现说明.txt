@@ -1,0 +1,22 @@
+1.source/tel_logistic_v3.ipynb	——	训练代码参考用
+2.编写model_service.py核心模型服务
+3.编写app.py（Flask应用）
+4.编写templates/index.html（前端页面）
+5.编写requirements.txt
+6.start-app.sh / run-me-windows.bat	——	启动脚本
+
+
+index.html（根目录纯前端版）	❌ 不编写	你已决定舍弃纯前端方案
+model_params.json	❌ 不编写	纯前端版才需要，后端版直接从内存读取模型
+api/index.py	❌ 不编写	Vercel 部署专用，本地开发不需要
+vercel.json	❌ 不编写	Vercel 部署配置，暂时跳过
+Procfile	❌ 不编写	Heroku/Gunicorn 生产部署用，本地不需要
+extract_params.py	❌ 不编写	提取前端系数的脚本，后端不需要
+.devcontainer/devcontainer.json	❌ 不编写	VS Code 远程容器配置，非必需
+
+依赖：
+不需要：
+gunicorn（本地开发用 Flask 内置服务器即可，生产部署才需要）
+werkzeug（Flask 会自动安装依赖项，无需显式声明）
+
+
