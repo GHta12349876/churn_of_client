@@ -60,15 +60,8 @@ class ChurnModelService:
             if candidate.exists():
                 return candidate
             raise FileNotFoundError(f'Could not find dataset at :{candidate}')
-        current_dir = Path(__file__).resolve().parent # __file__表当前文件的绝对路径，Path(__file__)转换为Path对象，.resolve()将路径解析为绝对路径。
-        candidates=[
-            current_dir / 'customerchurn.csv',
-            current_dir.parent / 'customerchurn.csv'
-        ]
-        for candidate in candidates:
-            if candidate.exists():
-                return candidate
-            raise FileNotFoundError('Could not locate customerchurn.csv in the app directory or its parent.')
+        # 数据文件固定在 resource/ 目录下
+        return Path(__file__).resolve().parent.parent / 'resource' / 'customerchurn.csv'
 
 
     @staticmethod
@@ -146,8 +139,7 @@ class ChurnModelService:
 
     def _train_models(self)->None:
         df=self._load_raw_data(self.data_path)
-        encoded = self._prepare_encodex_frame(df)
-        # 这里的数据处理根本不行啊。异常值检查呢?
+        encoded = self._prepare_encodex_frame(df)  # notebook发现没有异常值
         y = encoded['Churn']
 
         # 接下来一通操作：切分，管道，训练，输出（概率、预测值、混淆矩阵、多维度评分），交叉验证，结果序列化
@@ -185,6 +177,8 @@ class ChurnModelService:
         }
         # 用于**堆叠集成（Stacking）**时作为下一层模型的输入
         original_oof = cross_val_predict(original_pipe,X_train_base,y_train_base,cv=cv_base,method='predict_proba')[:,1] # 这里为什么又使用训练集
+        # 同样是内部K折交叉验证，但它返回的是每个样本的预测概率（而非评分）。关键机制是：对于每个样本，它只由从未见过该样本的折来预测，这种预测叫
+        # # OOF（Out - Of - Fold）预测——是无偏的。
 
         # 使用3特征再训练
         refit_source = encoded[self.original_spec.feature_names].copy()
@@ -306,7 +300,7 @@ class ChurnModelService:
             features = pd.DataFrame({
                 'SeniorCitizen':df['SeniorCitizen'].astype(float),
                 'tenure':df['tenure'].astype(float),
-                'InternetService': df['InternetService'].map(INTERNET_MAP).astype(float),
+                'InternetService_enc': df['InternetService'].map(INTERNET_MAP).astype(float),
                 'Contract_enc': df['Contract'].map(CONTRACT_MAP).astype(float),
                 'Pay_Credit card': (df['PaymentMethod'] == 'Credit card').astype(float),
                 'Pay_Electronic check': (df['PaymentMethod'] == 'Electronic check').astype(float),
@@ -343,53 +337,55 @@ class ChurnModelService:
         if probability >= thresholds['high']:
             return '高风险'
         if probability >= thresholds['high_mid']:
-            return '中高风险'
+            return '较高风险'
         if probability >= thresholds['low_mid']:
-            return '中低风险'
+            return '中等风险'
         return '低风险'
 
 
-    def _get_recommendations(self,risk_level:str)->list[str]:
+    def get_recommendations(self,risk_level:str)->list[str]:
         """给业务的建议"""
-        #        recommendations = {
-        #     '高风险': [
-        #         '立即联系客户，了解不满原因',
-        #         '提供专属优惠或折扣方案',
-        #         '考虑升级服务或提供增值服务',
-        #         '安排客户经理进行一对一沟通',
-        #         '提供合同升级优惠（如月付转年付）',
-        #     ],
-        #     '较高风险': [
-        #         '主动联系客户，了解使用体验',
-        #         '提供针对性产品推荐或升级方案',
-        #         '发送满意度调查并跟进反馈',
-        #         '提供限时优惠以提升忠诚度',
-        #         '定期跟进客户使用情况',
-        #     ],
-        #     '中等风险': [
-        #         '发送客户满意度调查',
-        #         '提供针对性的产品推荐',
-        #         '定期跟进客户使用情况',
-        #         '提供自助服务优化建议',
-        #         '考虑提供小幅优惠以提升忠诚度',
-        #     ],
-        #     '低风险': [
-        #         '保持常规客户关系维护',
-        #         '定期发送产品更新信息',
-        #         '邀请参与推荐计划',
-        #         '提供增值服务介绍',
-        #         '保持良好的服务质量',]}
-        pass # 自己写
+        recommendations = {
+            '高风险': [
+                '立即联系客户，了解不满原因',
+                '提供专属优惠或折扣方案',
+                '考虑升级服务或提供增值服务',
+                '安排客户经理进行一对一沟通',
+                '提供合同升级优惠（如月付转年付）',
+            ],
+            '较高风险': [
+                '主动联系客户，了解使用体验',
+                '提供针对性产品推荐或升级方案',
+                '发送满意度调查并跟进反馈',
+                '提供限时优惠以提升忠诚度',
+                '定期跟进客户使用情况',
+            ],
+            '中等风险': [
+                '发送客户满意度调查',
+                '提供针对性的产品推荐',
+                '定期跟进客户使用情况',
+                '提供自助服务优化建议',
+                '考虑提供小幅优惠以提升忠诚度',
+            ],
+            '低风险': [
+                '保持常规客户关系维护',
+                '定期发送产品更新信息',
+                '邀请参与推荐计划',
+                '提供增值服务介绍',
+                '保持良好的服务质量',
+            ]
+        }
+        return recommendations.get(risk_level, [])
 
 
-    def process_batch_data(self,df:pd.DataFrame,model:str='original')->pd.DataFrame:
+    def process_batch_data(self,df:pd.DataFrame,model:str='original')->pd.DataFrame:  # 处理批量数据
         self._ensure_trained()
         if model not in self._models:
             raise ValueError('model must be "original" or "rebuilt".')
         df_copy = df.copy()
         self._validate_input_frame(df_copy)
         probabilities = self.predict_churn(df_copy,model=model)
-        df_copy['ChurnProbability']=probabilities
+        df_copy['ChurnProbability'] = probabilities
         df_copy['RiskLevel']=[self._get_risk_level(probability,model=model) for probability in probabilities]
         return df_copy
 
