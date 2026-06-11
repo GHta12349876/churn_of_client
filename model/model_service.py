@@ -7,7 +7,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
-from sklearn.model_selection import train_test_split,StratifiedKFold,cross_val_predict,cross_val_score
+from sklearn.model_selection import train_test_split,StratifiedKFold,cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import classification_report,confusion_matrix,precision_score,recall_score,roc_auc_score
@@ -68,7 +68,7 @@ class ChurnModelService:
     def _load_raw_data(data_path:Path)->pd.DataFrame:
         """读取数据源，返回数据源的二维数组"""
         df=pd.read_csv(data_path)
-        return df.drop_duplicates().reset_index(drop=True)  # 为什么这里要删除重复值？不合理
+        return df.drop_duplicates().reset_index(drop=True)
 
 
     @staticmethod
@@ -82,8 +82,8 @@ class ChurnModelService:
         return encoded
 
     @staticmethod
-    def _build_threshold_summary(y_true:pd.Series,y_prob:np.ndarray)->dict[str,Any]:  # 说实话，这真是个没卵用的东西
-        """输出混淆矩阵与阈值，既考虑了业务约束（recall/Precision目标），又提供灵活的阈值选择空间"""
+    def _build_threshold_summary(y_true:pd.Series,y_prob:np.ndarray)->dict[str,Any]:
+        """基于F1最佳阈值和业务锚点（Recall≥0.9, Precision≥0.6）返回最佳阈值与四档风险分层"""
         precisions:list[float]=[]
         recalls:list[float]=[]
         f1_scores:list[float]=[]
@@ -119,15 +119,7 @@ class ChurnModelService:
         low_cut,mid_cut,high_cut = ordered
 
         return {
-            'threshold_grid':THRESHOLD_GRID.tolist(),
-            'precisions':precisions,
-            'recalls':recalls,
-            'f1_score':f1_scores,
             'best_threshold':best_thresh,
-            'best_index':best_idx,
-            # Top3最佳阈值
-            'top_thresholds':[float(THRESHOLD_GRID[index]) for index in np.argsort(f1_scores)[::-1][:3]],
-            'anchor_thresholds':anchors,
             'risk_thresholds':{
                 'low':0.0,
                 'low_mid':low_cut,
@@ -139,103 +131,94 @@ class ChurnModelService:
 
     def _train_models(self)->None:
         df=self._load_raw_data(self.data_path)
-        encoded = self._prepare_encodex_frame(df)  # notebook发现没有异常值
+        encoded = self._prepare_encodex_frame(df)
         y = encoded['Churn']
 
-        # 接下来一通操作：切分，管道，训练，输出（概率、预测值、混淆矩阵、多维度评分），交叉验证，结果序列化
-        X_original = encoded[self.original_spec.feature_names].astype(float).copy()
-        X_train_base,X_test_base,y_train_base,y_test_base = train_test_split(X_original,y,test_size=0.3,random_state=42,stratify=y)
-        original_pipe = Pipeline([
+        # 原模型：切分，管道，训练，评估，交叉验证
+        X_orig = encoded[self.original_spec.feature_names].astype(float).copy()
+        X_train,X_test,y_train,y_test = train_test_split(X_orig,y,test_size=0.3,random_state=42,stratify=y)
+        pipe = Pipeline([
             ('scaler',StandardScaler()),
             ('clf',LogisticRegression(random_state=42,max_iter=1000,class_weight='balanced'))
         ])
-        original_pipe.fit(X_train_base,y_train_base)
-        y_pred_proba_base = original_pipe.predict_proba(X_test_base)[:,1]
-        original_thresholds = self._build_threshold_summary(y_test_base,y_pred_proba_base)
-        original_y_pred_default = (y_pred_proba_base>=DEFAULT_THRESHOLD).astype(int) # 命名为original_y_pred_default是不是更好一些？
-        original_default_report = classification_report(y_test_base,original_y_pred_default,target_names=['未流失','流失'],output_dict=True,zero_division=0)
-        original_default_cm = confusion_matrix(y_test_base,original_y_pred_default)
-        tn_base, fp_base, fn_base, tp_base = original_default_cm.ravel()
-        original_default_metrics = {
-            'auc':float(roc_auc_score(y_test_base,y_pred_proba_base)),
-            'accuracy':float(original_default_report['accuracy']),
-            'precision':float(original_default_report['流失']['precision']),  # 嵌套字典访问。当然也可以使用get
-            'recall':float(original_default_report['流失']['recall']),
-            'f1':float(original_default_report['流失']['f1-score']),
-            'tpr':float(tp_base/(tp_base+fn_base) if (tp_base+fn_base)>0 else 0.0), # tpr不就是recall吗？为何多此一举？——也许是为了和fpr对齐
-            'fpr':float(fp_base/(fp_base+tn_base) if (fp_base+tn_base)>0 else 0.0),
-            'confusion_matrix':original_default_cm.tolist()
-            # 为什么总是转换成列表（序列化）？真的有必要吗？——有必要，适用场景：1.API接口返回数据。2.保存到json文件。3.前端展示。 如果不需要的话也可以不转
+        pipe.fit(X_train,y_train)
+        y_prob = pipe.predict_proba(X_test)[:,1]
+        threshold_summary = self._build_threshold_summary(y_test,y_prob)
+        y_pred_default = (y_prob>=DEFAULT_THRESHOLD).astype(int)
+        report = classification_report(y_test,y_pred_default,target_names=['未流失','流失'],output_dict=True,zero_division=0)
+        cm = confusion_matrix(y_test,y_pred_default)
+        tn, fp, fn, tp = cm.ravel()
+        metrics = {
+            'auc':float(roc_auc_score(y_test,y_prob)),
+            'accuracy':float(report['accuracy']),
+            'precision':float(report['流失']['precision']),
+            'recall':float(report['流失']['recall']),
+            'f1':float(report['流失']['f1-score']),
+            'tpr':float(tp/(tp+fn) if (tp+fn)>0 else 0.0),
+            'fpr':float(fp/(fp+tn) if (fp+tn)>0 else 0.0),
+            'confusion_matrix':cm.tolist()
         }
-        cv_base = StratifiedKFold(n_splits=5,random_state=42,shuffle=True)
-        # 交叉验证，结果序列化，后续可计算均值（平均性能），标准差（置信区间）
-        original_cv = {
-            'auc':cross_val_score(original_pipe,X_original,y,cv=cv_base,scoring='roc_auc').tolist(),
-            'recall':cross_val_score(original_pipe,X_original,y,cv=cv_base,scoring='recall').tolist(),
-            'precision':cross_val_score(original_pipe,X_original,y,cv=cv_base,scoring='precision').tolist(),
-            'f1':cross_val_score(original_pipe,X_original,y,cv=cv_base,scoring='f1').tolist(),
+        cv = StratifiedKFold(n_splits=5,random_state=42,shuffle=True)
+        cv_scores = {
+            'auc':cross_val_score(pipe,X_orig,y,cv=cv,scoring='roc_auc').tolist(),
+            'recall':cross_val_score(pipe,X_orig,y,cv=cv,scoring='recall').tolist(),
+            'precision':cross_val_score(pipe,X_orig,y,cv=cv,scoring='precision').tolist(),
+            'f1':cross_val_score(pipe,X_orig,y,cv=cv,scoring='f1').tolist(),
         }
-        # 用于**堆叠集成（Stacking）**时作为下一层模型的输入
-        original_oof = cross_val_predict(original_pipe,X_train_base,y_train_base,cv=cv_base,method='predict_proba')[:,1] # 这里为什么又使用训练集
-        # 同样是内部K折交叉验证，但它返回的是每个样本的预测概率（而非评分）。关键机制是：对于每个样本，它只由从未见过该样本的折来预测，这种预测叫
-        # # OOF（Out - Of - Fold）预测——是无偏的。
 
-        # 使用3特征再训练
+        # 重建模型：使用3特征再训练
         refit_source = encoded[self.original_spec.feature_names].copy()
         refit_source=refit_source.rename(columns={'Pay_Electronic check':'Is_Electronic_check'})
-        X_refit = refit_source[self.rebuilt_spec.feature_names].astype(float).copy()
-        X_train_refit, X_test_refit, y_train_refit, y_test_refit = train_test_split(X_refit,y,test_size=0.3,random_state=42,stratify=y)
-        refit_pipe = Pipeline([
-            ('Scaler',StandardScaler()),
+        X_r = refit_source[self.rebuilt_spec.feature_names].astype(float).copy()
+        X_train_r, X_test_r, y_train_r, y_test_r = train_test_split(X_r,y,test_size=0.3,random_state=42,stratify=y)
+        pipe_r = Pipeline([
+            ('scaler',StandardScaler()),
             ('clf',LogisticRegression(random_state=42,max_iter=1000,class_weight='balanced'))
         ])
-        refit_pipe.fit(X_train_refit,y_train_refit)
-        y_pred_proba_refit = refit_pipe.predict_proba(X_test_refit)[:,1]
-        refit_thresholds = self._build_threshold_summary(y_test_refit,y_pred_proba_refit)
-        refit_y_pred_default = (y_pred_proba_refit>=DEFAULT_THRESHOLD).astype(int)
-        refit_default_report = classification_report(y_test_refit,refit_y_pred_default,target_names=['未流失','流失'],zero_division=0,output_dict=True)
-        refit_default_cm = confusion_matrix(y_test_refit,refit_y_pred_default)
-        tn_refit, fp_refit, fn_refit, tp_refit = refit_default_cm.ravel()
-        refit_default_metrics ={
-            'auc':float(roc_auc_score(y_test_refit,y_pred_proba_refit)),
-            'accuracy':float(refit_default_report['accuracy']),
-            'precision': float(refit_default_report['流失']['precision']),
-            'recall': float(refit_default_report['流失']['recall']),
-            'f1': float(refit_default_report['流失']['f1-score']),
-            'tpr': float(tp_refit / (tp_refit + fn_refit) if (tp_refit + fn_refit) > 0 else 0.0),
-            'fpr': float(fp_refit / (fp_refit + tn_refit) if (fp_refit + tn_refit) > 0 else 0.0),
-            'confusion_matrix': refit_default_cm.tolist(),
+        pipe_r.fit(X_train_r,y_train_r)
+        y_prob_r = pipe_r.predict_proba(X_test_r)[:,1]
+        threshold_summary_r = self._build_threshold_summary(y_test_r,y_prob_r)
+        y_pred_default_r = (y_prob_r>=DEFAULT_THRESHOLD).astype(int)
+        report_r = classification_report(y_test_r,y_pred_default_r,target_names=['未流失','流失'],zero_division=0,output_dict=True)
+        cm_r = confusion_matrix(y_test_r,y_pred_default_r)
+        tn_r, fp_r, fn_r, tp_r = cm_r.ravel()
+        metrics_r ={
+            'auc':float(roc_auc_score(y_test_r,y_prob_r)),
+            'accuracy':float(report_r['accuracy']),
+            'precision': float(report_r['流失']['precision']),
+            'recall': float(report_r['流失']['recall']),
+            'f1': float(report_r['流失']['f1-score']),
+            'tpr': float(tp_r / (tp_r + fn_r) if (tp_r + fn_r) > 0 else 0.0),
+            'fpr': float(fp_r / (fp_r + tn_r) if (fp_r + tn_r) > 0 else 0.0),
+            'confusion_matrix': cm_r.tolist(),
         }
-        cv_refit = StratifiedKFold(n_splits=5,shuffle=True,random_state=42)
-        refit_cv = {
-            'auc':cross_val_score(refit_pipe,X_refit,y,cv=cv_refit,scoring='roc_auc').tolist(),
-            'recall':cross_val_score(refit_pipe,X_refit,y,cv=cv_refit,scoring='recall').tolist(),
-            'precision':cross_val_score(refit_pipe,X_refit,y,cv=cv_refit,scoring='precision').tolist(),
-            'f1':cross_val_score(refit_pipe,X_refit,y,cv=cv_refit,scoring='f1').tolist()
+        cv_r = StratifiedKFold(n_splits=5,shuffle=True,random_state=42)
+        cv_scores_r = {
+            'auc':cross_val_score(pipe_r,X_r,y,cv=cv_r,scoring='roc_auc').tolist(),
+            'recall':cross_val_score(pipe_r,X_r,y,cv=cv_r,scoring='recall').tolist(),
+            'precision':cross_val_score(pipe_r,X_r,y,cv=cv_r,scoring='precision').tolist(),
+            'f1':cross_val_score(pipe_r,X_r,y,cv=cv_r,scoring='f1').tolist()
         }
-        refit_oof = cross_val_predict(refit_pipe,X_train_refit,y_train_refit,cv=cv_refit,method='predict_proba')[:,1]
         self._models = {
-            'original':original_pipe,
-            'refit':refit_pipe
+            'original':pipe,
+            'rebuilt':pipe_r
         }
         self._metadata = {
             'original':{
                 'spec':self.original_spec,
                 'default_threshold':DEFAULT_THRESHOLD,
-                'best_threshold':original_thresholds['best_threshold'],
-                'risk_thresholds':original_thresholds['risk_thresholds'],
-                'metrics':original_default_metrics,
-                'cv':original_cv,
-                'oof_proba':original_oof.tolist()
+                'best_threshold':threshold_summary['best_threshold'],
+                'risk_thresholds':threshold_summary['risk_thresholds'],
+                'metrics':metrics,
+                'cv':cv_scores,
             },
             'rebuilt':{
                 'spec': self.rebuilt_spec,
                 'default_threshold': DEFAULT_THRESHOLD,
-                'best_threshold': refit_thresholds['best_threshold'],
-                'risk_thresholds': refit_thresholds['risk_thresholds'],
-                'metrics': refit_default_metrics,
-                'cv': refit_cv,
-                'oof_proba': refit_oof.tolist()
+                'best_threshold': threshold_summary_r['best_threshold'],
+                'risk_thresholds': threshold_summary_r['risk_thresholds'],
+                'metrics': metrics_r,
+                'cv': cv_scores_r,
             }
         }
         self._trained = True
@@ -295,7 +278,7 @@ class ChurnModelService:
 
     @staticmethod
     def _build_features(df:pd.DataFrame,model:str)->pd.DataFrame:
-        """这个和前面的独热编码的特征好像没有对齐，存在代码冗余的问题，到时候看一看"""
+        """根据模型类型构建特征DataFrame，用于单条/批量预测；手动编码以保证缺类时列结构固定"""
         if model == 'original':
             features = pd.DataFrame({
                 'SeniorCitizen':df['SeniorCitizen'].astype(float),
