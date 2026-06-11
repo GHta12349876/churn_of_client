@@ -3,13 +3,12 @@
 [![Python](https://img.shields.io/badge/Python-3.9+-blue.svg)](https://www.python.org/)
 [![Flask](https://img.shields.io/badge/Flask-2.0+-green.svg)](https://flask.palletsprojects.com/)
 [![scikit-learn](https://img.shields.io/badge/scikit--learn-1.0+-orange.svg)](https://scikit-learn.org/)
-[![License](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 > **基于逻辑回归的客户流失预测与风险分层系统** —— 从数据探索、统计建模到业务落地的完整数据分析实践
 
 ---
 
-## 📹 项目演示
+## 项目演示
 
 ### 在线演示视频
 
@@ -17,8 +16,9 @@
 
 ### 前端界面预览
 
-![单次输入示例](images\单次输入示例.png)
-![批量传输示例](images\多次传输示例.png)
+| 单条预测 | 批量预测 |
+|---------|---------|
+| ![Single Prediction Demo](demo/single_prediction_demo.png) | ![Batch Prediction Demo](demo/batch_prediction_demo.png) |
 
 ---
 
@@ -66,7 +66,7 @@
 | **Recall** | 0.891 | 0.885 | 成功识别近90%流失客户 |
 | **Precision** | 0.623 | 0.618 | 精准定位高风险客户 |
 | **F1-Score** | 0.734 | 0.729 | 综合表现优异 |
-| **特征数量** | 7 | 3 | **减少57%采集成本** |
+| **特征数量** | 7 | 3 | **减少采集成本** |
 
 ### 业务价值
 
@@ -160,11 +160,11 @@ python app.py
 | 特征 | VIF | 决策 |
 |------|-----|------|
 | MonthlyCharges | 12.47 | 剔除（严重共线性） |
-| InternetService_enc | 3.82 | 
-| Contract_enc | 2.15 | 
-| tenure | 1.93 | 
+| InternetService_enc | 3.82 |
+| Contract_enc | 2.15 |
+| tenure | 1.93 |
 | SeniorCitizen | 1.08 |
-| Pay_* 哑变量 | <1.5 |  
+| Pay_* 哑变量 | <1.5 |
 
 最终原模型7特征，重建模型精简为3核心特征（tenure、InternetService_enc、Is_Electronic_check）
 
@@ -312,9 +312,9 @@ churn-prediction-reproduction/
 
 ---
 
-## 作者与联系方式
+## 笔者声明
 
-本项目由个人独立完成，旨在展示数据分析全流程能力。如需交流或讨论，欢迎联系
+本项目由个人独立完成，旨在展示数据分析全流程能力。实际上项目有很多需要改进的地方，欢迎提issue或者PR。如需交流或讨论，欢迎联系
 
 ---
 
